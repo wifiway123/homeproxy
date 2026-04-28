@@ -1,0 +1,93 @@
+name: Build and Release HomeProxy 23.05
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master, main ]
+    paths:
+      - 'htdocs/**'
+      - 'po/**'
+      - 'root/**'
+      - 'Makefile'
+  release:
+    types: [ published ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout source tree
+        uses: actions/checkout@v4
+
+      - name: Setup Build Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev lua5.1 gettext fakeroot
+          
+          git clone --depth 1 https://github.com/openwrt/luci.git
+          pushd luci/modules/luci-base/src
+          make po2lmo
+          sudo install -m0755 po2lmo /usr/local/bin/po2lmo
+          popd
+
+          curl -fLO "https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build"
+          chmod +x ipkg-build
+          sudo mv ipkg-build /usr/local/bin/ipkg-build
+
+      - name: Build IPK
+        run: |
+          # 1. 生成日期前缀 (MMDD)
+          SHORT_DATE=$(date +'%m%d')
+          echo "SHORT_DATE=$SHORT_DATE" >> $GITHUB_ENV
+          
+          rm -rf ipk_root
+          mkdir -p ipk_root/CONTROL
+          
+          [ -d root ] && cp -r root/* ipk_root/
+          [ -d htdocs ] && mkdir -p ipk_root/www && cp -r htdocs/* ipk_root/www/
+          
+          if [ -d po ]; then
+            mkdir -p ipk_root/usr/lib/lua/luci/i18n
+            find po -name "*.po" | while read po_file; do
+              lang=$(basename $(dirname "$po_file") | tr 'A-Z' 'a-z')
+              po2lmo "$po_file" "ipk_root/usr/lib/lua/luci/i18n/homeproxy.$lang.lmo"
+            done
+          fi
+
+          cat > ipk_root/CONTROL/control <<EOF
+          Package: luci-app-homeproxy
+          Version: 1.0-${SHORT_DATE}
+          Architecture: all
+          Maintainer: GitHub-Actions
+          Depends: libc, luci-base, luci-compat, xray-core, sing-box
+          Description: HomeProxy for OpenWrt 23.05 (Built on ${SHORT_DATE})
+          EOF
+
+          fakeroot ipkg-build ipk_root .
+          
+          # 2. 文件名加日期前缀，例如 0428_luci...
+          RAW_FILE=$(ls luci-app-homeproxy*.ipk | head -n 1)
+          NEW_FILE="${SHORT_DATE}_${RAW_FILE}"
+          mv "$RAW_FILE" "$NEW_FILE"
+          
+          echo "IPK_FILE=$NEW_FILE" >> $GITHUB_ENV
+
+      - name: Upload to Release
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.IPK_FILE }}
+          # 【关键修改】：Tag 随日期变动，每个日期一个独立的 Release
+          tag_name: build-${{ env.SHORT_DATE }}
+          # 即使 Tag 变动，也开启覆盖，防止同一天多次运行产生冲突
+          overwrite: true
+          # 自动生成 Release 标题，例如 "Release build-0428"
+          name: Release build-${{ env.SHORT_DATE }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
