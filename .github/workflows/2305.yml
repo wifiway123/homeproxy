@@ -1,7 +1,13 @@
-name: Build and Release HomeProxy 23.05
+name: "Build HomeProxy - Daily Release"
 
 on:
   workflow_dispatch:
+    inputs:
+      force_build:
+        description: '是否强制重新编译'
+        required: false
+        default: 'true'
+        type: boolean
   push:
     branches: [ master, main ]
     paths:
@@ -9,8 +15,6 @@ on:
       - 'po/**'
       - 'root/**'
       - 'Makefile'
-  release:
-    types: [ published ]
 
 jobs:
   build:
@@ -27,19 +31,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev lua5.1 gettext fakeroot
           
+          # 准备 LMO 翻译工具
           git clone --depth 1 https://github.com/openwrt/luci.git
           pushd luci/modules/luci-base/src
           make po2lmo
           sudo install -m0755 po2lmo /usr/local/bin/po2lmo
           popd
 
+          # 获取打包脚本
           curl -fLO "https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build"
           chmod +x ipkg-build
           sudo mv ipkg-build /usr/local/bin/ipkg-build
 
       - name: Build IPK
         run: |
-          # 1. 生成日期前缀 (MMDD)
+          # 1. 生成日期标识 (仅日期，不含时间)
           SHORT_DATE=$(date +'%m%d')
           echo "SHORT_DATE=$SHORT_DATE" >> $GITHUB_ENV
           
@@ -57,6 +63,7 @@ jobs:
             done
           fi
 
+          # 2. 写入控制信息
           cat > ipk_root/CONTROL/control <<EOF
           Package: luci-app-homeproxy
           Version: 1.0-${SHORT_DATE}
@@ -68,24 +75,22 @@ jobs:
 
           fakeroot ipkg-build ipk_root .
           
-          # 2. 文件名加日期前缀，例如 0428_luci...
+          # 3. 文件名加日期前缀 (例如 0428_luci...)
           RAW_FILE=$(ls luci-app-homeproxy*.ipk | head -n 1)
-          NEW_FILE="${SHORT_DATE}_${RAW_FILE}"
+          NEW_FILE="${SHORT_DATE}_luci-app-homeproxy_2305.ipk"
           mv "$RAW_FILE" "$NEW_FILE"
           
           echo "IPK_FILE=$NEW_FILE" >> $GITHUB_ENV
 
-      - name: Upload to Release
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+      - name: Upload to Daily Release
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.IPK_FILE }}
-          # 【关键修改】：Tag 随日期变动，每个日期一个独立的 Release
+          # 【关键点 1】：Tag 名仅包含日期。同一天内 Tag 相同，会指向同一个 Release。
           tag_name: build-${{ env.SHORT_DATE }}
-          # 即使 Tag 变动，也开启覆盖，防止同一天多次运行产生冲突
+          name: "HomeProxy 23.05 发布 - ${{ env.SHORT_DATE }}"
+          # 【关键点 2】：覆盖模式开启。同一天内同名的 IPK 会被新的替换。
           overwrite: true
-          # 自动生成 Release 标题，例如 "Release build-0428"
-          name: Release build-${{ env.SHORT_DATE }}
           generate_release_notes: true
           draft: false
           prerelease: false
