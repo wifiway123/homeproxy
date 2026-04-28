@@ -1,4 +1,4 @@
-name: "Build HomeProxy - Daily Release"
+name: "Build HomeProxy - Daily Overwrite"
 
 on:
   workflow_dispatch:
@@ -31,22 +31,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev lua5.1 gettext fakeroot
           
-          # 准备 LMO 翻译工具
           git clone --depth 1 https://github.com/openwrt/luci.git
           pushd luci/modules/luci-base/src
           make po2lmo
           sudo install -m0755 po2lmo /usr/local/bin/po2lmo
           popd
 
-          # 获取打包脚本
           curl -fLO "https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build"
           chmod +x ipkg-build
           sudo mv ipkg-build /usr/local/bin/ipkg-build
 
       - name: Build IPK
         run: |
-          # 1. 生成日期标识 (仅日期，不含时间)
+          # 1. 生成日期标识 (仅 MMDD)
           SHORT_DATE=$(date +'%m%d')
+          # 生成详细时间戳用于内部版本号识别
+          FULL_TIME=$(date +'%m%d%H%M')
           echo "SHORT_DATE=$SHORT_DATE" >> $GITHUB_ENV
           
           rm -rf ipk_root
@@ -66,7 +66,7 @@ jobs:
           # 2. 写入控制信息
           cat > ipk_root/CONTROL/control <<EOF
           Package: luci-app-homeproxy
-          Version: 1.0-${SHORT_DATE}
+          Version: 1.0-${FULL_TIME}
           Architecture: all
           Maintainer: GitHub-Actions
           Depends: libc, luci-base, luci-compat, xray-core, sing-box
@@ -75,23 +75,22 @@ jobs:
 
           fakeroot ipkg-build ipk_root .
           
-          # 3. 文件名加日期前缀 (例如 0428_luci...)
-          RAW_FILE=$(ls luci-app-homeproxy*.ipk | head -n 1)
+          # 3. 固定文件名（同一天内运行会产生相同文件名，从而触发覆盖）
           NEW_FILE="${SHORT_DATE}_luci-app-homeproxy_2305.ipk"
-          mv "$RAW_FILE" "$NEW_FILE"
+          mv luci-app-homeproxy*.ipk "$NEW_FILE"
           
           echo "IPK_FILE=$NEW_FILE" >> $GITHUB_ENV
 
-      - name: Upload to Daily Release
+      - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.IPK_FILE }}
-          # 【关键点 1】：Tag 名仅包含日期。同一天内 Tag 相同，会指向同一个 Release。
           tag_name: build-${{ env.SHORT_DATE }}
           name: "HomeProxy 23.05 发布 - ${{ env.SHORT_DATE }}"
-          # 【关键点 2】：覆盖模式开启。同一天内同名的 IPK 会被新的替换。
+          # 【核心修改】：手动定义 body 并关闭自动生成的 Changelog
+          body: "编译完成。此版本为针对 OpenWrt 23.05 的适配版本。"
+          generate_release_notes: false
           overwrite: true
-          generate_release_notes: true
           draft: false
           prerelease: false
         env:
